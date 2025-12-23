@@ -17,10 +17,18 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({ user, onLogout }) =>
   const [completedExercises, setCompletedExercises] = useState<string[]>([]);
 
   useEffect(() => {
-    if (user.assignedPlanId) {
-      const p = db.getPlanById(user.assignedPlanId);
-      if (p) setPlan(p);
-    }
+    const loadPlan = async () => {
+      if (user.assignedPlanId) {
+        try {
+          const p = await db.getPlanById(user.assignedPlanId);
+          if (p) setPlan(p);
+        } catch (err) {
+          console.error(err);
+        }
+      }
+    };
+
+    void loadPlan();
   }, [user]);
 
   // Auto-select first day
