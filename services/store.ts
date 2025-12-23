@@ -1,97 +1,90 @@
 import { User, WorkoutPlan, Role, Exercise } from '../types';
 import { STANDARD_EXERCISES } from '../constants';
 
-const USERS_KEY = 'titan_users';
-const PLANS_KEY = 'titan_plans';
-const CUSTOM_EXERCISES_KEY = 'titan_custom_exercises';
+const jsonRequest = async <T>(url: string, options?: RequestInit): Promise<T> => {
+  const response = await fetch(url, {
+    headers: {
+      'Content-Type': 'application/json',
+      ...(options?.headers ?? {}),
+    },
+    ...options,
+  });
+
+  if (!response.ok) {
+    const message = await response.text();
+    throw new Error(message || `Request failed: ${response.status}`);
+  }
+
+  if (response.status === 204) {
+    return undefined as T;
+  }
+
+  return response.json() as Promise<T>;
+};
 
 export const db = {
   // --- USERS ---
-  getUsers: (): User[] => {
-    const stored = localStorage.getItem(USERS_KEY);
-    if (!stored) {
-      return [];
-    }
-    return JSON.parse(stored);
+  getUsers: (): Promise<User[]> => jsonRequest<User[]>('/api/users'),
+
+  hasAdmin: async (): Promise<boolean> => {
+    const response = await jsonRequest<{ hasAdmin: boolean }>('/api/users?hasAdmin=1');
+    return response.hasAdmin;
   },
 
-  hasAdmin: (): boolean => {
-    const users = db.getUsers();
-    return users.some(u => u.role === Role.ADMIN);
-  },
+  login: (username: string, password: string): Promise<User | null> =>
+    jsonRequest<User | null>('/api/login', {
+      method: 'POST',
+      body: JSON.stringify({ username, password }),
+    }),
 
-  saveUser: (user: User) => {
-    const users = db.getUsers();
-    const existingIndex = users.findIndex(u => u.id === user.id);
-    if (existingIndex >= 0) {
-      users[existingIndex] = user;
-    } else {
-      users.push(user);
-    }
-    localStorage.setItem(USERS_KEY, JSON.stringify(users));
-  },
+  saveUser: (user: User): Promise<User> =>
+    jsonRequest<User>('/api/users', {
+      method: 'POST',
+      body: JSON.stringify(user),
+    }),
 
-  updateUser: (updatedUser: User) => {
-    const users = db.getUsers();
-    const index = users.findIndex(u => u.id === updatedUser.id);
-    if (index !== -1) {
-      users[index] = updatedUser;
-      localStorage.setItem(USERS_KEY, JSON.stringify(users));
-    }
-  },
+  updateUser: (updatedUser: User): Promise<User> =>
+    jsonRequest<User>('/api/users', {
+      method: 'PUT',
+      body: JSON.stringify(updatedUser),
+    }),
 
-  deleteUser: (id: string) => {
-    const users = db.getUsers().filter(u => u.id !== id);
-    localStorage.setItem(USERS_KEY, JSON.stringify(users));
-  },
+  deleteUser: (id: string): Promise<void> =>
+    jsonRequest<void>(`/api/users?id=${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+    }),
 
   // --- PLANS ---
-  getPlans: (): WorkoutPlan[] => {
-    const stored = localStorage.getItem(PLANS_KEY);
-    const plans = stored ? JSON.parse(stored) : [];
-    // Sort plans by date descending (newest first)
-    return plans.sort((a: WorkoutPlan, b: WorkoutPlan) => 
-        new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
-    );
-  },
+  getPlans: (): Promise<WorkoutPlan[]> => jsonRequest<WorkoutPlan[]>('/api/plans'),
 
-  savePlan: (plan: WorkoutPlan) => {
-    const plans = db.getPlans();
-    const existingIndex = plans.findIndex(p => p.id === plan.id);
-    if (existingIndex >= 0) {
-      plans[existingIndex] = plan;
-    } else {
-      plans.push(plan);
-    }
-    localStorage.setItem(PLANS_KEY, JSON.stringify(plans));
-  },
+  savePlan: (plan: WorkoutPlan): Promise<WorkoutPlan> =>
+    jsonRequest<WorkoutPlan>('/api/plans', {
+      method: 'POST',
+      body: JSON.stringify(plan),
+    }),
 
-  deletePlan: (id: string) => {
-      const plans = db.getPlans().filter(p => p.id !== id);
-      localStorage.setItem(PLANS_KEY, JSON.stringify(plans));
-  },
+  deletePlan: (id: string): Promise<void> =>
+    jsonRequest<void>(`/api/plans?id=${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+    }),
 
   // --- EXERCISES ---
-  getCustomExercises: (): Exercise[] => {
-      const stored = localStorage.getItem(CUSTOM_EXERCISES_KEY);
-      return stored ? JSON.parse(stored) : [];
-  },
+  getCustomExercises: (): Promise<Exercise[]> => jsonRequest<Exercise[]>('/api/exercises'),
 
-  saveCustomExercise: (exercise: Exercise) => {
-      const customs = db.getCustomExercises();
-      customs.push(exercise);
-      localStorage.setItem(CUSTOM_EXERCISES_KEY, JSON.stringify(customs));
-  },
+  saveCustomExercise: (exercise: Exercise): Promise<Exercise> =>
+    jsonRequest<Exercise>('/api/exercises', {
+      method: 'POST',
+      body: JSON.stringify(exercise),
+    }),
 
-  getAllExercises: (): Exercise[] => {
-      const custom = db.getCustomExercises();
-      return [...STANDARD_EXERCISES, ...custom];
+  getAllExercises: async (): Promise<Exercise[]> => {
+    const custom = await db.getCustomExercises();
+    return [...STANDARD_EXERCISES, ...custom];
   },
 
   // --- HELPERS ---
-  getPlanById: (id: string): WorkoutPlan | undefined => {
-    return db.getPlans().find(p => p.id === id);
-  },
+  getPlanById: (id: string): Promise<WorkoutPlan | null> =>
+    jsonRequest<WorkoutPlan | null>(`/api/plans?id=${encodeURIComponent(id)}`),
 
   getStandardExercises: () => STANDARD_EXERCISES,
 };
