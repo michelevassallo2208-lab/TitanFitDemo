@@ -1,3 +1,5 @@
+"use client";
+
 import React, { useState, useEffect } from 'react';
 import { AuthState, User, Role } from './types';
 import { Login } from './components/Login';
