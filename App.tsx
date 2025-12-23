@@ -1,3 +1,5 @@
+"use client";
+
 import React, { useState, useEffect } from 'react';
 import { AuthState, User, Role } from './types';
 import { Login } from './components/Login';
@@ -33,7 +35,7 @@ const App: React.FC = () => {
     return <Login onLogin={handleLogin} />;
   }
 
-  if (auth.user?.role === Role.ADMIN) {
+  if (auth.user?.role === Role.ADMIN || auth.user?.role === Role.COACH) {
     return <AdminPanel onLogout={handleLogout} />;
   }
 

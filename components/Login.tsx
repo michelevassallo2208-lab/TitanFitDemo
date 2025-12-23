@@ -22,26 +22,37 @@ export const Login: React.FC<LoginProps> = ({ onLogin }) => {
   const [regPass, setRegPass] = useState('');
 
   useEffect(() => {
-    // Check if any admin exists
-    const hasAdmin = db.hasAdmin();
-    setIsFirstRun(!hasAdmin);
+    const load = async () => {
+      try {
+        const hasAdmin = await db.hasAdmin();
+        setIsFirstRun(!hasAdmin);
+      } catch (err) {
+        console.error(err);
+        setError('Errore nel caricamento degli utenti.');
+      }
+    };
+
+    void load();
   }, []);
 
-  const handleLogin = (e: React.FormEvent) => {
+  const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
 
-    const users = db.getUsers();
-    const user = users.find(u => u.username === username && u.password === password);
-
-    if (user) {
-      onLogin(user);
-    } else {
-      setError('Credenziali non valide. Riprova.');
+    try {
+      const user = await db.login(username, password);
+      if (user) {
+        onLogin(user);
+      } else {
+        setError('Credenziali non valide. Riprova.');
+      }
+    } catch (err) {
+      console.error(err);
+      setError('Errore durante il login. Riprova.');
     }
   };
 
-  const handleRegisterAdmin = (e: React.FormEvent) => {
+  const handleRegisterAdmin = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!regName || !regUser || !regPass) return;
 
@@ -53,10 +64,13 @@ export const Login: React.FC<LoginProps> = ({ onLogin }) => {
       role: Role.ADMIN
     };
 
-    db.saveUser(newAdmin);
-    
-    // Auto login
-    onLogin(newAdmin);
+    try {
+      await db.saveUser(newAdmin);
+      onLogin(newAdmin);
+    } catch (err) {
+      console.error(err);
+      setError('Errore durante la creazione dell\'admin.');
+    }
   };
 
   return (

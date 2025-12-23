@@ -10,6 +10,8 @@ interface AdminPanelProps {
 export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
   const [users, setUsers] = useState<User[]>([]);
   const [plans, setPlans] = useState<WorkoutPlan[]>([]);
+  const [allExercises, setAllExercises] = useState<Exercise[]>([]);
+  const [dbStatus, setDbStatus] = useState<'checking' | 'ok' | 'error'>('checking');
   const [activeTab, setActiveTab] = useState<'users' | 'plans'>('users');
   
   // Modals
@@ -23,6 +25,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
   // Plan Builder State
   const [planName, setPlanName] = useState('');
   const [targetUserForPlan, setTargetUserForPlan] = useState<User | null>(null);
+  const [selectedUserIdForPlan, setSelectedUserIdForPlan] = useState<string | null>(null);
   const [days, setDays] = useState<WorkoutDay[]>([]);
   const [activeDayIndex, setActiveDayIndex] = useState(0);
   const [exerciseSearch, setExerciseSearch] = useState('');
@@ -38,18 +41,27 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
   });
 
   useEffect(() => {
-    refreshData();
+    void refreshData();
   }, []);
 
-  const refreshData = () => {
-    setUsers(db.getUsers().filter(u => u.role === Role.USER));
-    setPlans(db.getPlans());
+  const refreshData = async () => {
+    try {
+      const [fetchedUsers, fetchedPlans, fetchedExercises] = await Promise.all([
+        db.getUsers(),
+        db.getPlans(),
+        db.getAllExercises(),
+      ]);
+      setUsers(fetchedUsers.filter(u => u.role !== Role.ADMIN));
+      setPlans(fetchedPlans);
+      setAllExercises(fetchedExercises);
+    } catch (err) {
+      console.error(err);
+    }
   };
 
   // --- EXERCISE MANAGEMENT ---
 
   const handleAddExerciseToPlan = (exerciseId: string) => {
-    const allExercises = db.getAllExercises();
     const stdExercise = allExercises.find(e => e.id === exerciseId);
     if (!stdExercise) return;
     if (days.length === 0) return; 
@@ -67,7 +79,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
     setShowAddExerciseModal(false); // Close mobile picker if open
   };
 
-  const handleCreateCustomExercise = () => {
+  const handleCreateCustomExercise = async () => {
       if(!newCustomEx.name || !newCustomEx.muscleGroup) return;
       const ex: Exercise = {
           id: `custom-${Date.now()}`,
@@ -78,9 +90,14 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
           tips: newCustomEx.tips || [],
           isCustom: true
       };
-      db.saveCustomExercise(ex);
-      setShowCreateExerciseModal(false);
-      setNewCustomEx({ tips: [''] });
+      try {
+        await db.saveCustomExercise(ex);
+        await refreshData();
+        setShowCreateExerciseModal(false);
+        setNewCustomEx({ tips: [''] });
+      } catch (err) {
+        console.error(err);
+      }
   }
 
   // --- PLAN MANAGEMENT ---
@@ -119,13 +136,14 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
       setActiveDayIndex(prev => prev >= newDays.length ? newDays.length - 1 : prev);
   };
 
-  const openPlanModal = (user: User | null = null) => {
+  const openPlanModal = async (user: User | null = null) => {
       setTargetUserForPlan(user);
+      setSelectedUserIdForPlan(user?.id ?? null);
       setExerciseSearch('');
       if (user) {
           setPlanName(`Scheda: ${user.fullName}`);
           if (user.assignedPlanId) {
-              const existing = db.getPlanById(user.assignedPlanId);
+              const existing = await db.getPlanById(user.assignedPlanId);
               if (existing) {
                   setPlanName(existing.name);
                   setDays(existing.days && existing.days.length > 0 ? existing.days : [{id: 'd1', name: 'Giorno 1', exercises: (existing as any).exercises || []}]);
@@ -156,25 +174,30 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
       createdAt: new Date().toISOString(),
     };
     
-    db.savePlan(plan);
+    await db.savePlan(plan);
 
-    if (targetUserForPlan) {
-        let updatedUser = { ...targetUserForPlan };
+    const assignedUser = targetUserForPlan
+      ? targetUserForPlan
+      : users.find(u => u.id === selectedUserIdForPlan && u.role === Role.USER) || null;
+
+    if (assignedUser) {
+        let updatedUser = { ...assignedUser };
         updatedUser.assignedPlanId = plan.id;
-        db.updateUser(updatedUser);
+        await db.updateUser(updatedUser);
     }
 
-    refreshData();
+    await refreshData();
     setShowPlanModal(false);
     setPlanName('');
     setDays([]);
     setTargetUserForPlan(null);
+    setSelectedUserIdForPlan(null);
   };
 
-  const handleArchiveCurrentPlan = (user: User) => {
+  const handleArchiveCurrentPlan = async (user: User) => {
       if(!user.assignedPlanId) return;
       
-      const currentPlan = db.getPlanById(user.assignedPlanId);
+      const currentPlan = await db.getPlanById(user.assignedPlanId);
       if(!currentPlan) return;
 
       const archived: any = {
@@ -190,46 +213,161 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
           planHistory: history 
       };
       
-      db.updateUser(updatedUser);
-      refreshData();
+      await db.updateUser(updatedUser);
+      await refreshData();
   }
 
   // --- USER MGMT ---
 
-  const handleSaveUser = () => {
+  const handleSaveUser = async () => {
     if (!newUser.username || !newUser.password || !newUser.fullName) return;
     const user: User = {
       id: `user-${Date.now()}`,
       username: newUser.username,
       password: newUser.password,
       fullName: newUser.fullName,
-      role: Role.USER,
+      role: newUser.role ?? Role.USER,
       assignedPlanId: newUser.assignedPlanId,
       goals: newUser.goals
     };
-    db.saveUser(user);
-    refreshData();
-    setShowUserModal(false);
-    setNewUser({ role: Role.USER });
+    try {
+      await db.saveUser(user);
+      await refreshData();
+      setShowUserModal(false);
+      setNewUser({ role: Role.USER });
+    } catch (err) {
+      console.error(err);
+    }
   };
 
-  const handleUpdateUser = () => {
+  const handleUpdateUser = async () => {
       if (!editingUser) return;
-      db.updateUser(editingUser);
-      refreshData();
-      setShowEditUserModal(false);
-      setEditingUser(null);
-  }
-
-  const handleDeleteUser = (id: string) => {
-      if(confirm('Eliminare cliente?')) {
-          db.deleteUser(id);
-          refreshData();
+      try {
+        await db.updateUser(editingUser);
+        await refreshData();
+        setShowEditUserModal(false);
+        setEditingUser(null);
+      } catch (err) {
+        console.error(err);
       }
   }
 
+  const handleDeleteUser = async (id: string) => {
+      if(confirm('Eliminare cliente?')) {
+          try {
+            await db.deleteUser(id);
+            await refreshData();
+          } catch (err) {
+            console.error(err);
+          }
+      }
+  }
+
+  const handleDeletePlan = async (planId: string) => {
+    if (confirm('Eliminare scheda?')) {
+      try {
+        await db.deletePlan(planId);
+        await refreshData();
+      } catch (err) {
+        console.error(err);
+      }
+    }
+  };
+
+  const handlePrintPlan = (plan: WorkoutPlan) => {
+    const printWindow = window.open('', '_blank', 'width=900,height=700');
+    if (!printWindow) return;
+
+    const planDays = plan.days
+      .map(
+        day => `
+          <section class="day">
+            <h3>${day.name}</h3>
+            <table>
+              <thead>
+                <tr>
+                  <th>Esercizio</th>
+                  <th>Serie</th>
+                  <th>Reps</th>
+                  <th>Recupero</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${day.exercises
+                  .map(
+                    ex => `
+                      <tr>
+                        <td>
+                          <div class="ex-name">${ex.name}</div>
+                          <div class="ex-muscle">${ex.muscleGroup}</div>
+                          ${ex.customNotes ? `<div class="ex-notes">${ex.customNotes}</div>` : ''}
+                        </td>
+                        <td>${ex.sets}</td>
+                        <td>${ex.reps}</td>
+                        <td>${ex.restSeconds}s</td>
+                      </tr>
+                    `
+                  )
+                  .join('')}
+              </tbody>
+            </table>
+          </section>
+        `
+      )
+      .join('');
+
+    const html = `
+      <html>
+        <head>
+          <title>${plan.name}</title>
+          <style>
+            body { font-family: Arial, sans-serif; color: #111827; padding: 32px; }
+            header { border-bottom: 2px solid #111827; padding-bottom: 12px; margin-bottom: 24px; }
+            h1 { margin: 0; font-size: 28px; }
+            h2 { margin: 6px 0 0; font-size: 14px; color: #4b5563; text-transform: uppercase; letter-spacing: 1px; }
+            h3 { margin: 0 0 12px; font-size: 18px; color: #0f766e; }
+            .day { margin-bottom: 24px; }
+            table { width: 100%; border-collapse: collapse; }
+            th, td { border: 1px solid #e5e7eb; padding: 10px; text-align: left; font-size: 13px; }
+            th { background: #f3f4f6; text-transform: uppercase; font-size: 11px; letter-spacing: 1px; }
+            .ex-name { font-weight: 700; }
+            .ex-muscle { font-size: 11px; text-transform: uppercase; color: #6b7280; margin-top: 4px; }
+            .ex-notes { margin-top: 6px; font-size: 12px; color: #b45309; }
+          </style>
+        </head>
+        <body>
+          <header>
+            <h1>${plan.name}</h1>
+            <h2>TITANFIT • ${new Date(plan.createdAt).toLocaleDateString()}</h2>
+          </header>
+          ${planDays}
+        </body>
+      </html>
+    `;
+
+    printWindow.document.open();
+    printWindow.document.write(html);
+    printWindow.document.close();
+    printWindow.focus();
+    printWindow.print();
+  };
+
+  useEffect(() => {
+    const check = async () => {
+      try {
+        const ok = await db.checkHealth();
+        setDbStatus(ok ? 'ok' : 'error');
+      } catch (err) {
+        console.error(err);
+        setDbStatus('error');
+      }
+    };
+
+    void check();
+  }, []);
+
   // Filtered Exercises
-  const filteredExercises = db.getAllExercises().filter(ex => 
+  const filteredExercises = allExercises.filter(ex => 
       ex.name.toLowerCase().includes(exerciseSearch.toLowerCase()) || 
       ex.muscleGroup.toLowerCase().includes(exerciseSearch.toLowerCase())
   );
@@ -239,7 +377,15 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
       
       {/* MOBILE HEADER / NAV */}
       <div className="md:hidden bg-dark-800 border-b border-white/5 p-4 flex justify-between items-center sticky top-0 z-20">
-          <h1 className="font-bold text-xl">TITAN<span className="text-titan-500">ADMIN</span></h1>
+          <div>
+            <h1 className="font-bold text-xl">TITAN<span className="text-titan-500">ADMIN</span></h1>
+            <div className="text-xs text-gray-500 flex items-center gap-2 mt-1">
+              <span className={`inline-flex items-center gap-1 ${dbStatus === 'ok' ? 'text-emerald-400' : dbStatus === 'error' ? 'text-red-400' : 'text-yellow-400'}`}>
+                <span className={`w-2 h-2 rounded-full ${dbStatus === 'ok' ? 'bg-emerald-400' : dbStatus === 'error' ? 'bg-red-400' : 'bg-yellow-400'}`}></span>
+                {dbStatus === 'ok' ? 'DB Connesso' : dbStatus === 'error' ? 'DB Offline' : 'DB Check'}
+              </span>
+            </div>
+          </div>
           <button onClick={onLogout}><LogOut size={20} className="text-red-400"/></button>
       </div>
 
@@ -272,9 +418,17 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
       {/* MAIN CONTENT */}
       <main className="flex-1 p-4 md:p-8 overflow-y-auto">
         <header className="hidden md:flex justify-between items-center mb-8">
-          <h2 className="text-3xl font-bold text-white tracking-tight">{activeTab === 'users' ? 'Gestione Clienti' : 'Libreria Schede'}</h2>
+          <div>
+          <h2 className="text-3xl font-bold text-white tracking-tight">{activeTab === 'users' ? 'Gestione Team' : 'Libreria Schede'}</h2>
+            <div className="mt-2 flex items-center gap-2 text-xs text-gray-500">
+              <span className={`inline-flex items-center gap-2 ${dbStatus === 'ok' ? 'text-emerald-400' : dbStatus === 'error' ? 'text-red-400' : 'text-yellow-400'}`}>
+                <span className={`w-2 h-2 rounded-full ${dbStatus === 'ok' ? 'bg-emerald-400' : dbStatus === 'error' ? 'bg-red-400' : 'bg-yellow-400'}`}></span>
+                {dbStatus === 'ok' ? 'DB Connesso' : dbStatus === 'error' ? 'DB Offline' : 'DB Check'}
+              </span>
+            </div>
+          </div>
           <button onClick={() => activeTab === 'users' ? setShowUserModal(true) : openPlanModal(null)} className="flex items-center gap-2 bg-white text-dark-900 px-6 py-2 rounded-full font-bold hover:bg-gray-200 transition-colors shadow-lg">
-            <Plus size={20} /> {activeTab === 'users' ? 'Nuovo Cliente' : 'Crea Scheda'}
+            <Plus size={20} /> {activeTab === 'users' ? 'Nuovo Utente' : 'Crea Scheda'}
           </button>
         </header>
 
@@ -299,23 +453,28 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                             <div className="font-bold text-white text-lg">{user.fullName}</div>
                             <div className="text-xs text-gray-500 flex items-center gap-2">
                                 <span>{user.username}</span>
-                                {user.assignedPlanId ? (
+                                {user.role === Role.COACH && <span className="text-purple-400">Coach</span>}
+                                {user.role === Role.USER && user.assignedPlanId ? (
                                     <span className="text-titan-500 flex items-center gap-1"><CheckCircle size={10}/> Scheda Attiva</span>
-                                ) : <span className="text-yellow-600">Nessuna Scheda</span>}
+                                ) : user.role === Role.USER ? <span className="text-yellow-600">Nessuna Scheda</span> : null}
                             </div>
                         </div>
                     </div>
                     
                     <div className="flex items-center justify-end gap-2 border-t md:border-t-0 border-white/5 pt-3 md:pt-0">
                          {/* History Button */}
-                         <button onClick={() => setShowHistoryModal(user)} className="p-2 text-gray-400 hover:text-white bg-dark-900 rounded-lg border border-white/5">
-                            <History size={18} />
-                        </button>
+                        {user.role === Role.USER && (
+                          <button onClick={() => setShowHistoryModal(user)} className="p-2 text-gray-400 hover:text-white bg-dark-900 rounded-lg border border-white/5">
+                              <History size={18} />
+                          </button>
+                        )}
                         
                         {/* Manage Plan */}
-                        <button onClick={() => openPlanModal(user)} className="px-4 py-2 bg-titan-600/10 text-titan-400 hover:bg-titan-600 hover:text-white rounded-lg font-bold text-sm flex items-center gap-2 transition-colors border border-titan-500/20">
-                            <Dumbbell size={16} /> Scheda
-                        </button>
+                        {user.role === Role.USER && (
+                          <button onClick={() => openPlanModal(user)} className="px-4 py-2 bg-titan-600/10 text-titan-400 hover:bg-titan-600 hover:text-white rounded-lg font-bold text-sm flex items-center gap-2 transition-colors border border-titan-500/20">
+                              <Dumbbell size={16} /> Scheda
+                          </button>
+                        )}
                         
                         {/* Edit User */}
                         <button onClick={() => { setEditingUser(user); setShowEditUserModal(true); }} className="p-2 text-blue-400 hover:text-white hover:bg-blue-900/30 rounded-lg transition-colors">
@@ -340,7 +499,10 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                     <div key={plan.id} className="bg-dark-800 rounded-xl border border-white/5 p-5 relative group">
                         <div className="flex justify-between items-start mb-2">
                             <h3 className="text-lg font-bold text-white">{plan.name}</h3>
-                            <button onClick={() => {db.deletePlan(plan.id); refreshData();}} className="text-gray-600 hover:text-red-400 p-1"><Trash2 size={16}/></button>
+                            <div className="flex items-center gap-2">
+                              <button onClick={() => handlePrintPlan(plan)} className="text-gray-400 hover:text-titan-400 p-1">Stampa</button>
+                              <button onClick={() => handleDeletePlan(plan.id)} className="text-gray-600 hover:text-red-400 p-1"><Trash2 size={16}/></button>
+                            </div>
                         </div>
                         <p className="text-xs text-gray-500 mb-4">{new Date(plan.createdAt).toLocaleDateString()}</p>
                         <div className="bg-dark-900 p-3 rounded-lg text-sm text-gray-400">
@@ -368,7 +530,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                       {showHistoryModal.assignedPlanId && (
                           <div className="bg-titan-900/20 border border-titan-500/30 p-4 rounded-xl">
                               <div className="text-xs text-titan-500 font-bold uppercase mb-1">Scheda Attiva</div>
-                              <div className="font-bold text-white">{db.getPlanById(showHistoryModal.assignedPlanId)?.name || 'Nome non disponibile'}</div>
+                              <div className="font-bold text-white">{plans.find(plan => plan.id === showHistoryModal.assignedPlanId)?.name || 'Nome non disponibile'}</div>
                               <button 
                                 onClick={() => handleArchiveCurrentPlan(showHistoryModal)}
                                 className="mt-3 w-full py-2 bg-dark-900 text-xs text-gray-400 rounded border border-white/10 hover:text-white"
@@ -470,6 +632,25 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                         ))}
                         <button onClick={addNewDay} className="px-3 py-2 bg-dark-800 rounded-lg text-gray-500 hover:text-white"><Plus size={16}/></button>
                     </div>
+                    {!targetUserForPlan && (
+                      <div className="flex flex-col gap-2 max-w-sm">
+                        <label className="text-xs uppercase tracking-widest text-gray-500 font-bold">Assegna a Cliente</label>
+                        <select
+                          className="bg-dark-800 border border-white/10 rounded-lg px-3 py-2 text-sm text-white"
+                          value={selectedUserIdForPlan ?? ''}
+                          onChange={(event) => setSelectedUserIdForPlan(event.target.value || null)}
+                        >
+                          <option value="">Seleziona cliente</option>
+                          {users
+                            .filter(user => user.role === Role.USER)
+                            .map(user => (
+                              <option key={user.id} value={user.id}>
+                                {user.fullName}
+                              </option>
+                            ))}
+                        </select>
+                      </div>
+                    )}
                 </div>
 
                 {/* Day Content */}
@@ -557,10 +738,10 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
       {/* CREATE CUSTOM EXERCISE MODAL */}
       {showCreateExerciseModal && (
           <div className="fixed inset-0 bg-black/90 z-[70] flex items-center justify-center p-4">
-              <div className="bg-dark-800 w-full max-w-lg rounded-2xl p-6 border border-white/10 shadow-2xl">
-                  <h3 className="text-xl font-bold text-white mb-4">Nuovo Esercizio Manuale</h3>
-                  <div className="space-y-3">
-                      <input type="text" placeholder="Nome Esercizio" className="w-full bg-dark-900 border border-gray-700 rounded p-3 text-white" value={newCustomEx.name || ''} onChange={e => setNewCustomEx({...newCustomEx, name: e.target.value})} />
+            <div className="bg-dark-800 w-full max-w-lg rounded-2xl p-6 border border-white/10 shadow-2xl">
+                <h3 className="text-xl font-bold text-white mb-4">Nuovo Esercizio Manuale</h3>
+                <div className="space-y-3">
+                    <input type="text" placeholder="Nome Esercizio" className="w-full bg-dark-900 border border-gray-700 rounded p-3 text-white" value={newCustomEx.name || ''} onChange={e => setNewCustomEx({...newCustomEx, name: e.target.value})} />
                       <input type="text" placeholder="Gruppo Muscolare (es. Dorsali)" className="w-full bg-dark-900 border border-gray-700 rounded p-3 text-white" value={newCustomEx.muscleGroup || ''} onChange={e => setNewCustomEx({...newCustomEx, muscleGroup: e.target.value})} />
                       <textarea placeholder="Descrizione / Consigli..." className="w-full bg-dark-900 border border-gray-700 rounded p-3 text-white h-24" value={newCustomEx.description || ''} onChange={e => setNewCustomEx({...newCustomEx, description: e.target.value})} />
                   </div>
@@ -575,13 +756,21 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
       {/* EDIT USER MODAL */}
       {(showUserModal || (showEditUserModal && editingUser)) && (
           <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-            <div className="bg-dark-800 w-full max-w-md rounded-2xl border border-white/10 p-6 shadow-2xl">
-                <h3 className="text-xl font-bold text-white mb-4">{showEditUserModal ? 'Modifica Cliente' : 'Nuovo Cliente'}</h3>
+          <div className="bg-dark-800 w-full max-w-md rounded-2xl border border-white/10 p-6 shadow-2xl">
+                <h3 className="text-xl font-bold text-white mb-4">{showEditUserModal ? 'Modifica Utente' : 'Nuovo Utente'}</h3>
                 <div className="space-y-4">
                     <input type="text" placeholder="Nome" className="w-full bg-dark-900 border border-gray-700 rounded-lg p-3 text-white outline-none" value={showEditUserModal ? editingUser?.fullName : newUser.fullName} onChange={(e) => showEditUserModal ? setEditingUser({...editingUser!, fullName: e.target.value}) : setNewUser({...newUser, fullName: e.target.value})}/>
                     <input type="text" placeholder="Username" className="w-full bg-dark-900 border border-gray-700 rounded-lg p-3 text-white outline-none" value={showEditUserModal ? editingUser?.username : newUser.username} onChange={(e) => showEditUserModal ? setEditingUser({...editingUser!, username: e.target.value}) : setNewUser({...newUser, username: e.target.value})}/>
                     <input type="text" placeholder="Password" className="w-full bg-dark-900 border border-gray-700 rounded-lg p-3 text-white outline-none" value={showEditUserModal ? editingUser?.password : newUser.password} onChange={(e) => showEditUserModal ? setEditingUser({...editingUser!, password: e.target.value}) : setNewUser({...newUser, password: e.target.value})}/>
                     <input type="text" placeholder="Obiettivo" className="w-full bg-dark-900 border border-gray-700 rounded-lg p-3 text-white outline-none" value={showEditUserModal ? editingUser?.goals : newUser.goals} onChange={(e) => showEditUserModal ? setEditingUser({...editingUser!, goals: e.target.value}) : setNewUser({...newUser, goals: e.target.value})}/>
+                    <select
+                      className="w-full bg-dark-900 border border-gray-700 rounded-lg p-3 text-white outline-none"
+                      value={showEditUserModal ? editingUser?.role : newUser.role ?? Role.USER}
+                      onChange={(e) => showEditUserModal ? setEditingUser({...editingUser!, role: e.target.value as Role}) : setNewUser({...newUser, role: e.target.value as Role})}
+                    >
+                      <option value={Role.USER}>Cliente</option>
+                      <option value={Role.COACH}>Coach</option>
+                    </select>
                 </div>
                 <div className="mt-6 flex justify-end gap-3">
                     <button onClick={() => {setShowUserModal(false); setShowEditUserModal(false)}} className="px-4 py-2 text-gray-300">Annulla</button>
