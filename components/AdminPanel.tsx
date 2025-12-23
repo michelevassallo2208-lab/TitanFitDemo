@@ -10,6 +10,7 @@ interface AdminPanelProps {
 export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
   const [users, setUsers] = useState<User[]>([]);
   const [plans, setPlans] = useState<WorkoutPlan[]>([]);
+  const [allExercises, setAllExercises] = useState<Exercise[]>([]);
   const [activeTab, setActiveTab] = useState<'users' | 'plans'>('users');
   
   // Modals
@@ -38,18 +39,27 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
   });
 
   useEffect(() => {
-    refreshData();
+    void refreshData();
   }, []);
 
-  const refreshData = () => {
-    setUsers(db.getUsers().filter(u => u.role === Role.USER));
-    setPlans(db.getPlans());
+  const refreshData = async () => {
+    try {
+      const [fetchedUsers, fetchedPlans, fetchedExercises] = await Promise.all([
+        db.getUsers(),
+        db.getPlans(),
+        db.getAllExercises(),
+      ]);
+      setUsers(fetchedUsers.filter(u => u.role === Role.USER));
+      setPlans(fetchedPlans);
+      setAllExercises(fetchedExercises);
+    } catch (err) {
+      console.error(err);
+    }
   };
 
   // --- EXERCISE MANAGEMENT ---
 
   const handleAddExerciseToPlan = (exerciseId: string) => {
-    const allExercises = db.getAllExercises();
     const stdExercise = allExercises.find(e => e.id === exerciseId);
     if (!stdExercise) return;
     if (days.length === 0) return; 
@@ -67,7 +77,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
     setShowAddExerciseModal(false); // Close mobile picker if open
   };
 
-  const handleCreateCustomExercise = () => {
+  const handleCreateCustomExercise = async () => {
       if(!newCustomEx.name || !newCustomEx.muscleGroup) return;
       const ex: Exercise = {
           id: `custom-${Date.now()}`,
@@ -78,9 +88,14 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
           tips: newCustomEx.tips || [],
           isCustom: true
       };
-      db.saveCustomExercise(ex);
-      setShowCreateExerciseModal(false);
-      setNewCustomEx({ tips: [''] });
+      try {
+        await db.saveCustomExercise(ex);
+        await refreshData();
+        setShowCreateExerciseModal(false);
+        setNewCustomEx({ tips: [''] });
+      } catch (err) {
+        console.error(err);
+      }
   }
 
   // --- PLAN MANAGEMENT ---
@@ -119,13 +134,13 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
       setActiveDayIndex(prev => prev >= newDays.length ? newDays.length - 1 : prev);
   };
 
-  const openPlanModal = (user: User | null = null) => {
+  const openPlanModal = async (user: User | null = null) => {
       setTargetUserForPlan(user);
       setExerciseSearch('');
       if (user) {
           setPlanName(`Scheda: ${user.fullName}`);
           if (user.assignedPlanId) {
-              const existing = db.getPlanById(user.assignedPlanId);
+              const existing = await db.getPlanById(user.assignedPlanId);
               if (existing) {
                   setPlanName(existing.name);
                   setDays(existing.days && existing.days.length > 0 ? existing.days : [{id: 'd1', name: 'Giorno 1', exercises: (existing as any).exercises || []}]);
@@ -156,25 +171,25 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
       createdAt: new Date().toISOString(),
     };
     
-    db.savePlan(plan);
+    await db.savePlan(plan);
 
     if (targetUserForPlan) {
         let updatedUser = { ...targetUserForPlan };
         updatedUser.assignedPlanId = plan.id;
-        db.updateUser(updatedUser);
+        await db.updateUser(updatedUser);
     }
 
-    refreshData();
+    await refreshData();
     setShowPlanModal(false);
     setPlanName('');
     setDays([]);
     setTargetUserForPlan(null);
   };
 
-  const handleArchiveCurrentPlan = (user: User) => {
+  const handleArchiveCurrentPlan = async (user: User) => {
       if(!user.assignedPlanId) return;
       
-      const currentPlan = db.getPlanById(user.assignedPlanId);
+      const currentPlan = await db.getPlanById(user.assignedPlanId);
       if(!currentPlan) return;
 
       const archived: any = {
@@ -190,13 +205,13 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
           planHistory: history 
       };
       
-      db.updateUser(updatedUser);
-      refreshData();
+      await db.updateUser(updatedUser);
+      await refreshData();
   }
 
   // --- USER MGMT ---
 
-  const handleSaveUser = () => {
+  const handleSaveUser = async () => {
     if (!newUser.username || !newUser.password || !newUser.fullName) return;
     const user: User = {
       id: `user-${Date.now()}`,
@@ -207,29 +222,52 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
       assignedPlanId: newUser.assignedPlanId,
       goals: newUser.goals
     };
-    db.saveUser(user);
-    refreshData();
-    setShowUserModal(false);
-    setNewUser({ role: Role.USER });
+    try {
+      await db.saveUser(user);
+      await refreshData();
+      setShowUserModal(false);
+      setNewUser({ role: Role.USER });
+    } catch (err) {
+      console.error(err);
+    }
   };
 
-  const handleUpdateUser = () => {
+  const handleUpdateUser = async () => {
       if (!editingUser) return;
-      db.updateUser(editingUser);
-      refreshData();
-      setShowEditUserModal(false);
-      setEditingUser(null);
-  }
-
-  const handleDeleteUser = (id: string) => {
-      if(confirm('Eliminare cliente?')) {
-          db.deleteUser(id);
-          refreshData();
+      try {
+        await db.updateUser(editingUser);
+        await refreshData();
+        setShowEditUserModal(false);
+        setEditingUser(null);
+      } catch (err) {
+        console.error(err);
       }
   }
 
+  const handleDeleteUser = async (id: string) => {
+      if(confirm('Eliminare cliente?')) {
+          try {
+            await db.deleteUser(id);
+            await refreshData();
+          } catch (err) {
+            console.error(err);
+          }
+      }
+  }
+
+  const handleDeletePlan = async (planId: string) => {
+    if (confirm('Eliminare scheda?')) {
+      try {
+        await db.deletePlan(planId);
+        await refreshData();
+      } catch (err) {
+        console.error(err);
+      }
+    }
+  };
+
   // Filtered Exercises
-  const filteredExercises = db.getAllExercises().filter(ex => 
+  const filteredExercises = allExercises.filter(ex => 
       ex.name.toLowerCase().includes(exerciseSearch.toLowerCase()) || 
       ex.muscleGroup.toLowerCase().includes(exerciseSearch.toLowerCase())
   );
@@ -340,7 +378,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                     <div key={plan.id} className="bg-dark-800 rounded-xl border border-white/5 p-5 relative group">
                         <div className="flex justify-between items-start mb-2">
                             <h3 className="text-lg font-bold text-white">{plan.name}</h3>
-                            <button onClick={() => {db.deletePlan(plan.id); refreshData();}} className="text-gray-600 hover:text-red-400 p-1"><Trash2 size={16}/></button>
+                            <button onClick={() => handleDeletePlan(plan.id)} className="text-gray-600 hover:text-red-400 p-1"><Trash2 size={16}/></button>
                         </div>
                         <p className="text-xs text-gray-500 mb-4">{new Date(plan.createdAt).toLocaleDateString()}</p>
                         <div className="bg-dark-900 p-3 rounded-lg text-sm text-gray-400">
@@ -368,7 +406,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                       {showHistoryModal.assignedPlanId && (
                           <div className="bg-titan-900/20 border border-titan-500/30 p-4 rounded-xl">
                               <div className="text-xs text-titan-500 font-bold uppercase mb-1">Scheda Attiva</div>
-                              <div className="font-bold text-white">{db.getPlanById(showHistoryModal.assignedPlanId)?.name || 'Nome non disponibile'}</div>
+                              <div className="font-bold text-white">{plans.find(plan => plan.id === showHistoryModal.assignedPlanId)?.name || 'Nome non disponibile'}</div>
                               <button 
                                 onClick={() => handleArchiveCurrentPlan(showHistoryModal)}
                                 className="mt-3 w-full py-2 bg-dark-900 text-xs text-gray-400 rounded border border-white/10 hover:text-white"
